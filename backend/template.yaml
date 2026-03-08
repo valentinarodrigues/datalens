@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: DataLens — agentic third-party data product discovery API
+
+# ── Deploy ─────────────────────────────────────────────────────────────────────
+# Prerequisites:
+#   aws configure  (or set AWS_PROFILE)
+#   sam build && sam deploy --guided   (first time — saves samconfig.toml)
+#   sam deploy                         (subsequent deploys)
+#
+# The guided deploy will ask for:
+#   Stack name, AWS region, ECR repo (SAM creates one), ANTHROPIC_API_KEY,
+#   allowed CORS origins, Datadog config.
+#
+# Outputs the API Gateway URL — set VITE_API_URL= in frontend/.env.production
+
+Globals:
+  Function:
+    Timeout: 300          # 5 min — agentic loops can be multi-step
+    MemorySize: 1024      # LangChain/LangGraph benefit from headroom
+    Architectures:
+      - arm64             # Graviton2 — ~20% cheaper than x86, same perf
+
+Parameters:
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Description: Anthropic API key for Claude (stored as SecureString in SSM)
+
+  AllowedOrigins:
+    Type: String
+    Default: "https://your-frontend-domain.com"
+    Description: Comma-separated CORS origins (CloudFront URL or custom domain)
+
+  DatadogApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Datadog API key (leave blank to disable Datadog extension)
+
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [development, staging, production]
+
+Resources:
+
+  # ── Lambda Function ───────────────────────────────────────────────────────────
+  DataLensFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      Description: DataLens agentic data product discovery backend
+
+      Environment:
+        Variables:
+          ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          ALLOWED_ORIGINS: !Ref AllowedOrigins
+          DD_API_KEY: !Ref DatadogApiKey
+          DD_ENV: !Ref Environment
+          DD_SERVICE: datalens
+          DD_VERSION: "1.0.0"
+          DD_TRACE_ENABLED: !If [DatadogEnabled, "true", "false"]
+          # Powertools / structured logging
+          LOG_LEVEL: INFO
+          POWERTOOLS_SERVICE_NAME: datalens
+
+      # API Gateway HTTP API — cheaper + faster than REST API for this use case
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DataLensHttpApi
+            Path: /{proxy+}
+            Method: ANY
+        # Root path (health check at /)
+        RootEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DataLensHttpApi
+            Path: /
+            Method: ANY
+
+      # Optional: Datadog Lambda Extension layer for APM + log forwarding
+      # Uncomment and set the correct region ARN from:
+      # https://docs.datadoghq.com/serverless/installation/python/
+      # Layers:
+      #   - !If
+      #     - DatadogEnabled
+      #     - arn:aws:lambda:us-east-1:464622532012:layer:Datadog-Extension:65
+      #     - !Ref AWS::NoValue
+
+    Metadata:
+      # SAM builds the Docker image and pushes to ECR automatically
+      DockerTag: datalens-backend
+      DockerContext: .        # backend/ directory
+      Dockerfile: Dockerfile
+
+  # ── HTTP API Gateway ──────────────────────────────────────────────────────────
+  DataLensHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Description: DataLens API Gateway
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AllowedOrigins
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+        MaxAge: 300
+      # Optional: add a custom domain via AWS::ApiGatewayV2::DomainName
+
+  # ── CloudWatch Log Group ──────────────────────────────────────────────────────
+  DataLensLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${DataLensFunction}"
+      RetentionInDays: 30
+
+Conditions:
+  DatadogEnabled: !Not [!Equals [!Ref DatadogApiKey, ""]]
+
+Outputs:
+  ApiUrl:
+    Description: >
+      API Gateway endpoint URL — set this as VITE_API_URL in frontend/.env.production
+      and update ALLOWED_ORIGINS to include your frontend CloudFront/domain URL.
+    Value: !Sub "https://${DataLensHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  FunctionArn:
+    Description: DataLens Lambda function ARN
+    Value: !GetAtt DataLensFunction.Arn
+
+  LogGroup:
+    Description: CloudWatch log group (Datadog log forwarder should subscribe to this)
+    Value: !Ref DataLensLogGroup

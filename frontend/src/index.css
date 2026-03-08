@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-950 text-slate-100 font-sans antialiased;
+  }
+  ::-webkit-scrollbar {
+    @apply w-1.5;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-slate-900;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-slate-600 rounded-full;
+  }
+}
+
+.prose-datalens {
+  @apply text-slate-200 leading-relaxed;
+}
+.prose-datalens h1, .prose-datalens h2, .prose-datalens h3 {
+  @apply text-slate-100 font-semibold mt-3 mb-1;
+}
+.prose-datalens h2 { @apply text-base; }
+.prose-datalens h3 { @apply text-sm; }
+.prose-datalens p { @apply mb-2 text-sm; }
+.prose-datalens ul { @apply list-disc list-inside mb-2 text-sm space-y-0.5; }
+.prose-datalens ol { @apply list-decimal list-inside mb-2 text-sm space-y-0.5; }
+.prose-datalens li { @apply text-slate-300; }
+.prose-datalens strong { @apply text-slate-100 font-semibold; }
+.prose-datalens em { @apply text-slate-300 italic; }
+.prose-datalens code {
+  @apply bg-slate-800 text-emerald-400 px-1 py-0.5 rounded text-xs font-mono;
+}
+.prose-datalens pre {
+  @apply bg-slate-800 rounded-lg p-3 mb-2 overflow-x-auto;
+}
+.prose-datalens pre code {
+  @apply bg-transparent text-emerald-400 text-xs;
+}
+.prose-datalens blockquote {
+  @apply border-l-2 border-blue-500 pl-3 text-slate-400 italic my-2;
+}
+.prose-datalens table {
+  @apply w-full text-xs border-collapse mb-2;
+}
+.prose-datalens th {
+  @apply bg-slate-800 text-slate-300 font-semibold px-2 py-1 text-left border border-slate-700;
+}
+.prose-datalens td {
+  @apply px-2 py-1 border border-slate-700 text-slate-300;
+}
+.prose-datalens tr:nth-child(even) td {
+  @apply bg-slate-800/40;
+}
+.prose-datalens a {
+  @apply text-blue-400 underline;
+}
