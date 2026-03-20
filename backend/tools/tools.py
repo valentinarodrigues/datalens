@@ -1,15 +1,65 @@
 """
 LangChain tools for DataLens agents.
-Each tool queries the mock data layer — in production these would call
-real catalog APIs, Snowflake metadata, S3 manifests, Datadog usage metrics, etc.
+
+Usage statistics are read from DynamoDB when USAGE_TABLE_NAME is set.
+All other data reads from mock_data (swap for real S3/catalog calls in production).
 """
 import json
+import logging
+import os
+from decimal import Decimal
 from typing import Optional
+
+import boto3
+from botocore.exceptions import ClientError
 from langchain_core.tools import tool
 from mock_data import (
     DATA_CATALOG, SCHEMAS, QUALITY_METRICS,
     LEGAL_METADATA, PROCUREMENT, USAGE_STATS,
 )
+
+logger = logging.getLogger("datalens.tools")
+
+# ── DynamoDB setup ─────────────────────────────────────────────────────────────
+# Set USAGE_TABLE_NAME in .env to enable live DynamoDB queries.
+# If not set, falls back to mock data — local dev works without AWS credentials.
+_USAGE_TABLE_NAME = os.getenv("USAGE_TABLE_NAME", "")
+_dynamodb = boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION", "us-east-1"))
+_usage_table = _dynamodb.Table(_USAGE_TABLE_NAME) if _USAGE_TABLE_NAME else None
+
+
+def _decimal_to_native(obj):
+    """Recursively convert DynamoDB Decimal types to int/float for JSON."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    if isinstance(obj, dict):
+        return {k: _decimal_to_native(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_decimal_to_native(i) for i in obj]
+    return obj
+
+
+def _get_usage(product_id: str) -> dict:
+    """
+    Fetch usage stats from DynamoDB if configured, otherwise fall back to mock data.
+    DynamoDB table schema:
+        PK  product_id  (String)  — partition key
+        Attributes: total_teams, total_users, monthly_api_calls_avg,
+                    top_use_cases, top_teams, growth_trend, mom_growth_pct,
+                    data_pipeline_integrations, utilisation_pct, ...
+    """
+    if _usage_table:
+        try:
+            response = _usage_table.get_item(Key={"product_id": product_id})
+            item = response.get("Item")
+            if item:
+                item.pop("product_id", None)      # don't duplicate in response
+                return _decimal_to_native(item)
+            logger.warning("DynamoDB: no usage item found for %s", product_id)
+        except ClientError as e:
+            logger.error("DynamoDB error for %s: %s", product_id, e)
+    # Fallback to mock data (local dev / DynamoDB not configured)
+    return USAGE_STATS.get(product_id, {})
 
 
 def _find_products(query: str = "", domain: str = "", access_type: str = "") -> list:
@@ -195,13 +245,17 @@ def get_usage_statistics(product_id: str) -> str:
     monthly API call volume and utilisation %, top use cases, team breakdown,
     growth trend, and which data pipeline integrations exist.
 
+    Data is read from DynamoDB (when USAGE_TABLE_NAME is configured) or
+    falls back to mock data for local development.
+
     Args:
         product_id: The product ID (e.g. "geo_matrix_demographics")
     """
-    usage = USAGE_STATS.get(product_id)
+    usage = _get_usage(product_id)
     if not usage:
         return json.dumps({"error": f"Usage stats not found for '{product_id}'."})
-    return json.dumps({"product_id": product_id, "usage": usage})
+    source = "dynamodb" if _usage_table else "mock"
+    return json.dumps({"product_id": product_id, "usage": usage, "source": source})
 
 
 @tool

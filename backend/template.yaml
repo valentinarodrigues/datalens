@@ -9,8 +9,14 @@ Description: DataLens — agentic third-party data product discovery API
 #   sam deploy                         (subsequent deploys)
 #
 # The guided deploy will ask for:
-#   Stack name, AWS region, ECR repo (SAM creates one), ANTHROPIC_API_KEY,
+#   Stack name, AWS region, ECR repo (SAM creates one), BedrockModelId,
 #   allowed CORS origins, Datadog config.
+#
+# Bedrock model must be enabled in your account first:
+#   Bedrock console → Model access → Enable chosen model
+#
+# After first deploy, seed the usage table:
+#   python scripts/seed_dynamodb.py --table <UsageTableName stack output>
 #
 # Outputs the API Gateway URL — set VITE_API_URL= in frontend/.env.production
 
@@ -22,10 +28,16 @@ Globals:
       - arm64             # Graviton2 — ~20% cheaper than x86, same perf
 
 Parameters:
-  AnthropicApiKey:
+  BedrockModelId:
     Type: String
-    NoEcho: true
-    Description: Anthropic API key for Claude (stored as SecureString in SSM)
+    Default: "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    Description: >
+      Bedrock model ID for the DataLens agent.
+      Must be enabled in your AWS account (Bedrock console → Model access).
+      Options:
+        anthropic.claude-3-5-sonnet-20241022-v2:0  (default — best tool use)
+        anthropic.claude-3-haiku-20240307-v1:0      (faster, cheaper)
+        anthropic.claude-3-sonnet-20240229-v1:0
 
   AllowedOrigins:
     Type: String
@@ -45,6 +57,29 @@ Parameters:
 
 Resources:
 
+  # ── DynamoDB — Usage Statistics ───────────────────────────────────────────────
+  # Stores per-product usage stats (teams using it, query volume, active users).
+  # Partition key: product_id (String) — matches product IDs in mock_data/data.py
+  # Seeded by: python backend/scripts/seed_dynamodb.py
+  UsageTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-usage-stats"
+      BillingMode: PAY_PER_REQUEST    # no capacity planning needed, low traffic
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: product_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: product_id
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: DataLens
+        - Key: Environment
+          Value: !Ref Environment
+
   # ── Lambda Function ───────────────────────────────────────────────────────────
   DataLensFunction:
     Type: AWS::Serverless::Function
@@ -54,8 +89,14 @@ Resources:
 
       Environment:
         Variables:
-          ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          # Bedrock
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          AWS_REGION_NAME: !Ref AWS::Region   # explicit — boto3 picks this up
+          # DynamoDB
+          USAGE_TABLE_NAME: !Ref UsageTable
+          # CORS
           ALLOWED_ORIGINS: !Ref AllowedOrigins
+          # Datadog
           DD_API_KEY: !Ref DatadogApiKey
           DD_ENV: !Ref Environment
           DD_SERVICE: datalens
@@ -64,6 +105,30 @@ Resources:
           # Powertools / structured logging
           LOG_LEVEL: INFO
           POWERTOOLS_SERVICE_NAME: datalens
+
+      Policies:
+        # ── Bedrock ─────────────────────────────────────────────────────────────
+        # Allow the Lambda to invoke any Bedrock model in the account/region.
+        # Scope this down to a specific model ARN in production if desired.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+                - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0"
+                - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0"
+
+        # ── DynamoDB ─────────────────────────────────────────────────────────────
+        # Read-only access to the usage stats table (agent only reads, never writes).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Scan
+                - dynamodb:Query
+              Resource: !GetAtt UsageTable.Arn
 
       # API Gateway HTTP API — cheaper + faster than REST API for this use case
       Events:
@@ -134,6 +199,16 @@ Outputs:
   FunctionArn:
     Description: DataLens Lambda function ARN
     Value: !GetAtt DataLensFunction.Arn
+
+  UsageTableName:
+    Description: >
+      DynamoDB usage stats table name.
+      Seed it after first deploy: python scripts/seed_dynamodb.py --table <this value>
+    Value: !Ref UsageTable
+
+  UsageTableArn:
+    Description: DynamoDB usage stats table ARN
+    Value: !GetAtt UsageTable.Arn
 
   LogGroup:
     Description: CloudWatch log group (Datadog log forwarder should subscribe to this)

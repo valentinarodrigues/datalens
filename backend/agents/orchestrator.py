@@ -16,7 +16,7 @@ import sys
 import os
 from typing import Annotated, Any, Dict, Optional, Sequence, TypedDict
 
-from langchain_ollama import ChatOllama
+from langchain_aws import ChatBedrock
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
@@ -95,14 +95,37 @@ class AgentState(TypedDict):
 # ── Build the graph ────────────────────────────────────────────────────────────
 
 _tools = get_all_tools()
-_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
-_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-_model = ChatOllama(
-    model=_OLLAMA_MODEL,
-    base_url=_OLLAMA_BASE_URL,
-    temperature=0,
-    num_ctx=8192,        # larger context window for multi-tool conversations
-    num_predict=4096,    # max tokens to generate
+
+# ── Bedrock client ─────────────────────────────────────────────────────────────
+# Auth: uses standard boto3 credential chain —
+#   local dev:  AWS_PROFILE or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in .env
+#   Lambda:     execution role IAM permissions (no credentials needed in code)
+#
+# The model must be enabled in your AWS account:
+#   Bedrock console → Model access → Enable the chosen model
+#
+# Supported values for BEDROCK_MODEL_ID:
+#   anthropic.claude-3-5-sonnet-20241022-v2:0   ← default, best tool use
+#   anthropic.claude-3-haiku-20240307-v1:0       ← faster, cheaper
+#   anthropic.claude-3-sonnet-20240229-v1:0
+
+import boto3 as _boto3
+
+_BEDROCK_MODEL_ID = os.getenv(
+    "BEDROCK_MODEL_ID",
+    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+)
+_AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+_bedrock_client = _boto3.client(
+    service_name="bedrock-runtime",
+    region_name=_AWS_REGION,
+)
+
+_model = ChatBedrock(
+    model_id=_BEDROCK_MODEL_ID,
+    client=_bedrock_client,
+    model_kwargs={"temperature": 0, "max_tokens": 4096},
 )
 _model_with_tools = _model.bind_tools(_tools)
 
