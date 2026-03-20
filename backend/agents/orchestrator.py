@@ -4,19 +4,21 @@ DataLens multi-agent orchestrator using LangGraph.
 Graph topology:
     START → agent → (tool calls?) → tools → agent → ... → END
 
-The agent node runs Claude with all tools bound. LangGraph's tools_condition
-routes to the ToolNode when Claude emits tool_use blocks, then back to the
-agent — creating the agentic loop automatically.
+The agent node runs the configured LLM with all tools bound. LangGraph's
+tools_condition routes to the ToolNode when the model emits tool calls, then
+back to the agent — creating the agentic loop automatically.
+
+LLM backend is selected via the LLM_BACKEND env var (see agents/llm_factory.py):
+    LLM_BACKEND=bedrock   → Amazon Bedrock (default, used in production)
+    LLM_BACKEND=ollama    → local Ollama server (no AWS needed, great for local dev)
 
 Persona-aware system prompts tailor the depth and focus of responses per role.
 """
-import json
 import operator
 import sys
 import os
-from typing import Annotated, Any, Dict, Optional, Sequence, TypedDict
+from typing import Annotated, Any, Dict, Sequence, TypedDict
 
-from langchain_aws import ChatBedrock
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
@@ -25,6 +27,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 # Add parent to path so imports work when running from backend/
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools import get_all_tools
+from agents.llm_factory import get_llm
 
 # ── Persona system prompts ─────────────────────────────────────────────────────
 
@@ -96,46 +99,17 @@ class AgentState(TypedDict):
 
 _tools = get_all_tools()
 
-# ── Bedrock client ─────────────────────────────────────────────────────────────
-# Auth: uses standard boto3 credential chain —
-#   local dev:  AWS_PROFILE or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in .env
-#   Lambda:     execution role IAM permissions (no credentials needed in code)
-#
-# The model must be enabled in your AWS account:
-#   Bedrock console → Model access → Enable the chosen model
-#
-# Supported values for BEDROCK_MODEL_ID:
-#   anthropic.claude-3-5-sonnet-20241022-v2:0   ← default, best tool use
-#   anthropic.claude-3-haiku-20240307-v1:0       ← faster, cheaper
-#   anthropic.claude-3-sonnet-20240229-v1:0
-
-import boto3 as _boto3
-
-_BEDROCK_MODEL_ID = os.getenv(
-    "BEDROCK_MODEL_ID",
-    "anthropic.claude-3-5-sonnet-20241022-v2:0",
-)
-_AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-
-_bedrock_client = _boto3.client(
-    service_name="bedrock-runtime",
-    region_name=_AWS_REGION,
-)
-
-_model = ChatBedrock(
-    model_id=_BEDROCK_MODEL_ID,
-    client=_bedrock_client,
-    model_kwargs={"temperature": 0, "max_tokens": 4096},
-)
+# LLM is selected at startup from LLM_BACKEND env var.
+# Switch between backends without touching this file — just change .env.
+_model = get_llm()
 _model_with_tools = _model.bind_tools(_tools)
 
 
 def _agent_node(state: AgentState) -> Dict[str, Any]:
-    """Agent node: run Claude with tools bound."""
+    """Agent node: run the LLM with tools bound."""
     persona = state.get("persona", "Data Scientist")
     system = _build_system_prompt(persona)
 
-    # Prepend system message
     messages = [SystemMessage(content=system)] + list(state["messages"])
     response = _model_with_tools.invoke(messages)
     return {"messages": [response]}

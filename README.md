@@ -212,11 +212,13 @@ datalens/
 |------|---------|---------|
 | Python | 3.9+ | [python.org](https://python.org) |
 | Node.js | 18+ | `brew install node` |
-| AWS CLI | v2 | `brew install awscli` |
 
-**AWS setup:**
-- Configure credentials: `aws configure` (or set `AWS_PROFILE`)
-- Enable the Bedrock model in your account: Bedrock console → Model access → enable `Claude 3.5 Sonnet`
+**Bedrock** (production default) additionally requires:
+- AWS CLI v2: `brew install awscli` + `aws configure`
+- Model enabled: Bedrock console → Model access → enable `Claude 3.5 Sonnet`
+
+**Ollama** (local dev, no AWS needed) additionally requires:
+- `brew install ollama`
 
 ### Backend
 
@@ -228,16 +230,30 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env:
-#   BEDROCK_MODEL_ID  — model ID (default works if Claude 3.5 Sonnet is enabled)
-#   AWS_REGION        — region where Bedrock is enabled (default: us-east-1)
-#   AWS_PROFILE       — optional, if using a named AWS profile
-#   USAGE_TABLE_NAME  — leave blank for local dev (falls back to mock data)
+```
+
+**Choose your LLM backend in `.env`:**
+
+```env
+# Option A — Amazon Bedrock (requires AWS creds + model enabled in your account)
+LLM_BACKEND=bedrock
+BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
+AWS_REGION=us-east-1
+# AWS_PROFILE=my-dev-profile   # optional named profile
+
+# Option B — Ollama (no AWS account needed, fully local)
+LLM_BACKEND=ollama
+OLLAMA_MODEL=llama3.1           # or llama3.2 for faster/lighter
+OLLAMA_BASE_URL=http://localhost:11434
 ```
 
 ### Run
 
 ```bash
+# Ollama only — pull a model and start the server (skip if using Bedrock)
+ollama pull llama3.1    # first time only (~4.9 GB)
+ollama serve            # keep running in a dedicated terminal tab
+
 # Tab 1 — backend
 cd backend
 set -a && . .env && set +a
@@ -340,6 +356,9 @@ For Lambda, add the Datadog Lambda Extension layer ARN in `template.yaml` and se
 | `AccessDeniedException` on Bedrock | Model not enabled or IAM missing | Enable model in Bedrock console; check IAM policy |
 | `ValidationException: model not found` | Wrong model ID or model disabled | Check `BEDROCK_MODEL_ID` in `.env`; enable model in Bedrock console |
 | `NoCredentialsError` | AWS credentials not configured | Run `aws configure` or set `AWS_PROFILE` |
+| `connection refused :11434` (Ollama) | Ollama not running | Run `ollama serve` in a separate terminal |
+| `model not found` (Ollama) | Model not pulled | Run `ollama pull llama3.1` |
+| Slow responses (Ollama) | Large model on CPU | Switch to `OLLAMA_MODEL=llama3.2` in `.env` |
 | `no such file or directory: .env` | Wrong directory when sourcing | `cd backend` first |
 | `address already in use :8000` | Stale process | `kill $(lsof -ti:8000)` |
 | `address already in use :5173` | Stale Vite process | `kill $(lsof -ti:5173)` |
